@@ -1,0 +1,97 @@
+plugins {
+    id 'java'
+}
+
+group = 'org.example'
+version = '1.0-SNAPSHOT'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+  //  testImplementation platform('org.junit:junit-bom:5.10.0')
+    testRuntimeOnly  'org.junit.jupiter:junit-jupiter:5.10.3'
+    // https://mvnrepository.com/artifact/org.seleniumhq.selenium/selenium-java
+    implementation group: 'org.seleniumhq.selenium', name: 'selenium-java', version: '4.22.0'
+    implementation 'io.github.bonigarcia:webdrivermanager:5.3.1' // Check for the latest version
+
+    testImplementation group: 'junit', name: 'junit', version: '4.13'
+//    testImplementation group: 'io.cucumber', name: 'cucumber-core', version: '5.6.0'
+//    testImplementation group: 'io.cucumber', name: 'cucumber-java', version: '5.6.0'
+//    testImplementation group: 'io.cucumber', name: 'cucumber-junit', version: '5.6.0'
+
+    implementation group: 'io.cucumber', name: 'cucumber-core', version: '7.13.0'
+    implementation group: 'io.cucumber', name: 'cucumber-java', version: '7.13.0'
+    implementation group: 'io.cucumber', name: 'cucumber-junit', version: '7.13.0'
+
+    // https://mvnrepository.com/artifact/io.rest-assured/rest-assured
+    implementation group: 'io.rest-assured', name: 'rest-assured', version: '4.5.1'
+
+    // https://mvnrepository.com/artifact/org.json/json
+    implementation group: 'org.json', name: 'json', version: '20231013'
+
+}
+
+task regression(type: JavaExec){
+
+    dependsOn assemble, compileJava, compileTestJava
+    //SystemProperties System.properties
+    def tag=project.hasProperty('tagName')? tagName:'@SmokeTest'
+    systemProperties['env']=project.hasProperty('env')?env:'tsys'
+    mainClass="io.cucumber.core.cli.Main"
+    classpath = sourceSets.test.runtimeClasspath
+    args=['--plugin','pretty',
+    '--plugin','html:target/cucumber-reports.html',
+    '--plugin','json:target/cucumber-reports.json',
+    //'src/test/resources/TestLogin.feature',
+    '--tags',tag,
+    '--glue', 'org.apistep',
+    '--threads','30'
+    ]
+
+}
+
+task smoke(type: Test){
+
+    dependsOn assemble, compileJava, compileTestJava
+    //SystemProperties System.properties
+    def tag=System.getProperty('tagName')? tagName:'@SmokeTest'
+    systemProperties['env']=project.hasProperty('env')?env:'tsys'
+  // useJUnitPlatform
+    systemProperty 'junit.jupiter.execution.parallel.enabled', 'true'
+    systemProperty 'junit.jupiter.execution.parallel.mode.default', 'concurrent'
+    systemProperty 'junit.jupiter.execution.parallel.config.strategy', 'dynamic'
+    systemProperty 'junit.jupiter.execution.parallel.config.dynamic.factor', '4'
+    systemProperty("cucumber.filter.tags", System.getProperty("cucumber.filter.tags"))
+
+
+//    mainClass="io.cucumber.core.cli.Main"
+    jvmArgs=['-Dcucumber.filter.tags='+tag]
+    classpath = sourceSets.test.runtimeClasspath
+
+//    jvmArgs=['--plugin','pretty',
+//          '--plugin','html:target/cucumber-reports.html',
+//          '--plugin','json:target/cucumber-reports.json',
+//          'src/test/resources/TestLogin.feature',
+//          '--tags',tag,
+//          '--glue', 'org.stepdef',
+//          '--threads','30'
+//    ]
+
+}
+
+configurations {
+    cucumberRuntime {
+        extendsFrom testRuntimeOnly
+    }
+}
+
+//
+//test {
+//    useJUnitPlatform()
+//}
+////test {
+////    systemProperty("cucumber.options", System.getProperty("cucumber.option"))
+////    include '**/org/runner/runnerclass/**'
+////}
