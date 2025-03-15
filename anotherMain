@@ -1,0 +1,104 @@
+import org.apache.poi.ss.usermodel.*;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import java.io.*;
+import java.sql.*;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.stream.Collectors;
+
+public class ExcelDBProcessor {
+
+    private static final String EXCEL_FILE = "data.xlsx";
+    private static final String OUTPUT_FILE = "updated_data.xlsx";
+
+    // Thread pool for async execution
+    private static final ExecutorService executor = Executors.newFixedThreadPool(10);
+
+    public static void main(String[] args) {
+        try {
+            FileInputStream fis = new FileInputStream(EXCEL_FILE);
+            Workbook workbook = new XSSFWorkbook(fis);
+            Sheet sheet = workbook.getSheetAt(0); // First sheet
+
+            List<CompletableFuture<Void>> futures = new ArrayList<>();
+
+            for (Row row : sheet) {
+                if (row.getRowNum() == 0) continue; // Skip header
+
+                String ssn = row.getCell(0).getStringCellValue();
+                double premium = row.getCell(1).getNumericCellValue();
+                String name = row.getCell(2).getStringCellValue();
+                String options = row.getCell(3).getStringCellValue();
+
+                // Process each row asynchronously
+                CompletableFuture<Void> future = CompletableFuture.supplyAsync(() -> processRow(ssn, premium, name, options), executor)
+                        .thenAccept(results -> updateExcelRow(row, results));
+
+                futures.add(future);
+            }
+
+            // Wait for all tasks to complete
+            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+
+            // Save updated Excel file
+            FileOutputStream fos = new FileOutputStream(OUTPUT_FILE);
+            workbook.write(fos);
+            fos.close();
+            workbook.close();
+            executor.shutdown();
+
+            System.out.println("Processing complete. Updated file saved.");
+
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    private static Map<String, String> processRow(String ssn, double premium, String name, String options) {
+        try (Connection oracleConn = DBConnection.getOracleConnection();
+             Connection postgresConn = DBConnection.getPostgresConnection()) {
+
+            // Run DB queries in parallel
+            CompletableFuture<String> ageFuture = CompletableFuture.supplyAsync(() -> fetchAge(oracleConn, ssn), executor);
+            CompletableFuture<String> premiumDataFuture = CompletableFuture.supplyAsync(() -> fetchPremiumData(postgresConn, premium, name, options), executor);
+
+            return CompletableFuture.allOf(ageFuture, premiumDataFuture)
+                    .thenApply(v -> Map.of(
+                            "age", ageFuture.join(),
+                            "premiumData", premiumDataFuture.join()
+                    )).get();
+
+        } catch (Exception e) {
+            e.printStackTrace();
+            return Collections.emptyMap();
+        }
+    }
+
+    private static String fetchAge(Connection conn, String ssn) {
+        try (PreparedStatement ps = conn.prepareStatement("SELECT age FROM participants WHERE ssn = ?")) {
+            ps.setString(1, ssn);
+            ResultSet rs = ps.executeQuery();
+            return rs.next() ? rs.getString("age") : "N/A";
+        } catch (SQLException e) {
+            e.printStackTrace();
+            return "Error";
+        }
+    }
+
+    private static String fetchPremiumData(Connection conn, double premium, String name, String options) {
+        try (PreparedStatement ps = conn.prepareStatement("SELECT premium_rate FROM plans WHERE name = ? AND options = ?")) {
+            ps.setString(1, name);
+            ps.setString(2, options);
+            ResultSet rs = ps.executeQuery();
+            return rs.next() ? rs.getString("premium_rate") : "N/A";
+        } catch (SQLException e) {
+            e.printStackTrace();
+            return "Error";
+        }
+    }
+
+    private static void updateExcelRow(Row row, Map<String, String> results) {
+        row.createCell(4).setCellValue(results.get("age"));
+        row.createCell(5).setCellValue(results.get("premiumData"));
+    }
+}
