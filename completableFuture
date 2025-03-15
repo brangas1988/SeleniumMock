@@ -1,0 +1,141 @@
+import org.apache.poi.ss.usermodel.*;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+
+import java.io.*;
+import java.sql.*;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.stream.Collectors;
+
+public class ExcelDbProcessor {
+
+    private static final String INPUT_FILE = "input.xlsx";
+    private static final String OUTPUT_FILE = "output.xlsx";
+
+    public static void main(String[] args) throws Exception {
+        List<List<String>> excelData = readExcel(INPUT_FILE);
+        
+        ExecutorService executorService = Executors.newFixedThreadPool(10); // Parallel execution
+        List<CompletableFuture<List<String>>> futures = new ArrayList<>();
+
+        for (List<String> row : excelData) {
+            futures.add(processRowAsync(row, executorService));
+        }
+
+        // Wait for all database calls to complete
+        List<List<String>> processedData = futures.stream()
+                .map(CompletableFuture::join) // Blocking call to get results
+                .collect(Collectors.toList());
+
+        // Write updated data to Excel
+        writeExcel(OUTPUT_FILE, processedData);
+        executorService.shutdown();
+    }
+
+    private static List<List<String>> readExcel(String filePath) throws IOException {
+        List<List<String>> data = new ArrayList<>();
+        try (FileInputStream fis = new FileInputStream(new File(filePath));
+             Workbook workbook = new XSSFWorkbook(fis)) {
+
+            Sheet sheet = workbook.getSheetAt(0);
+            for (Row row : sheet) {
+                List<String> rowData = new ArrayList<>();
+                for (Cell cell : row) {
+                    rowData.add(cell.toString());
+                }
+                data.add(rowData);
+            }
+        }
+        return data;
+    }
+
+    private static CompletableFuture<List<String>> processRowAsync(List<String> row, ExecutorService executor) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                return processRow(row);
+            } catch (Exception e) {
+                e.printStackTrace();
+                return row;
+            }
+        }, executor);
+    }
+
+    private static List<String> processRow(List<String> row) throws SQLException {
+        try (Connection oracleConn = getOracleConnection();
+             Connection postgresConn = getPostgresConnection()) {
+
+            String param = row.get(0);
+
+            // Run multiple DB queries asynchronously
+            CompletableFuture<String> oracleQuery1 = fetchOracleData(oracleConn, param);
+            CompletableFuture<String> oracleQuery2 = fetchOracleData(oracleConn, param);
+            CompletableFuture<String> postgresQuery1 = fetchPostgresData(postgresConn, param);
+            CompletableFuture<String> postgresQuery2 = fetchPostgresData(postgresConn, param);
+
+            // Wait for all DB calls to complete
+            CompletableFuture.allOf(oracleQuery1, oracleQuery2, postgresQuery1, postgresQuery2).join();
+
+            // Collect results
+            row.add(oracleQuery1.get());
+            row.add(oracleQuery2.get());
+            row.add(postgresQuery1.get());
+            row.add(postgresQuery2.get());
+
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return row;
+    }
+
+    private static CompletableFuture<String> fetchOracleData(Connection connection, String param) {
+        return CompletableFuture.supplyAsync(() -> {
+            try (PreparedStatement stmt = connection.prepareStatement("SELECT data FROM oracle_table WHERE param = ?")) {
+                stmt.setString(1, param);
+                ResultSet rs = stmt.executeQuery();
+                return rs.next() ? rs.getString("data") : "N/A";
+            } catch (SQLException e) {
+                e.printStackTrace();
+                return "Error";
+            }
+        });
+    }
+
+    private static CompletableFuture<String> fetchPostgresData(Connection connection, String param) {
+        return CompletableFuture.supplyAsync(() -> {
+            try (PreparedStatement stmt = connection.prepareStatement("SELECT info FROM postgres_table WHERE param = ?")) {
+                stmt.setString(1, param);
+                ResultSet rs = stmt.executeQuery();
+                return rs.next() ? rs.getString("info") : "N/A";
+            } catch (SQLException e) {
+                e.printStackTrace();
+                return "Error";
+            }
+        });
+    }
+
+    private static Connection getOracleConnection() throws SQLException {
+        return DriverManager.getConnection("jdbc:oracle:thin:@//your-oracle-db-url", "username", "password");
+    }
+
+    private static Connection getPostgresConnection() throws SQLException {
+        return DriverManager.getConnection("jdbc:postgresql://your-postgres-db-url", "username", "password");
+    }
+
+    private static void writeExcel(String filePath, List<List<String>> data) throws IOException {
+        try (Workbook workbook = new XSSFWorkbook();
+             FileOutputStream fos = new FileOutputStream(filePath)) {
+
+            Sheet sheet = workbook.createSheet("Processed Data");
+            int rowNum = 0;
+
+            for (List<String> rowData : data) {
+                Row row = sheet.createRow(rowNum++);
+                for (int i = 0; i < rowData.size(); i++) {
+                    row.createCell(i).setCellValue(rowData.get(i));
+                }
+            }
+
+            workbook.write(fos);
+        }
+    }
+}
